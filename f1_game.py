@@ -1,294 +1,242 @@
-import pygame
+import arcade
 import numpy as np
+import pandas as pd
 import fastf1
-from pygame.locals import *
-import sys
+import os
 
+# Enable caching to speed up re-loading
+if not os.path.exists('f1_cache'):
+    os.makedirs('f1_cache')
+fastf1.Cache.enable_cache('f1_cache')
 
-class F1Game:
+STATE_MENU, STATE_LOADING, STATE_RACING = 0, 1, 2
+
+class RealisticF1Sim(arcade.Window):
     def __init__(self):
-        # Pygame setup
-        pygame.init()
-        self.WIDTH = 1400
-        self.HEIGHT = 900
-        self.display = pygame.display.set_mode((self.WIDTH, self.HEIGHT))
-        pygame.display.set_caption("F1 Track Visualization - Silverstone 2023 Qualifying")
-        self.clock = pygame.time.Clock()
-        self.font_large = pygame.font.Font(None, 32)
-        self.font_small = pygame.font.Font(None, 24)
-        self.font_tiny = pygame.font.Font(None, 18)
+        super().__init__(1400, 900, "Simple F1", resizable=True)
+        arcade.set_background_color(arcade.color.BLACK)
         
-        # Game state
-        self.running = True
-        self.playing = False
-        self.current_frame = 0
+        self.state = STATE_MENU
+        self.elapsed_time = 0.0
         self.speed_multiplier = 1.0
         
-        # Load F1 data
-        print("Loading F1 data...")
-        self.load_data()
+        # Menu Inputs
+        self.input_year = "2023"
+        self.input_event = "Silverstone"
+        self.input_drivers = "20"
+        self.input_mode = "One Lap" 
+        self.active_field = 0
         
-        # UI buttons
-        self.buttons = {
-            'play': pygame.Rect(50, 50, 100, 40),
-            'pause': pygame.Rect(160, 50, 100, 40),
-            'reset': pygame.Rect(270, 50, 100, 40),
-            'speed_up': pygame.Rect(400, 50, 80, 40),
-            'speed_down': pygame.Rect(490, 50, 80, 40),
-        }
-    
-    def load_data(self):
-        """Load F1 session and driver data"""
-        session = fastf1.get_session(2023, 'Silverstone', 'Q')
-        session.load()
-        
-        self.circuit_info = session.get_circuit_info()
-        self.drivers = session.drivers[:5]
-        
-        # Rotation angle
-        track_angle = self.circuit_info.rotation / 180 * np.pi
-        
-        # Load driver data
         self.driver_data = []
-        for driver in self.drivers:
-            try:
-                driver_laps = session.laps.pick_drivers(driver)
-                if len(driver_laps) > 0:
-                    fastest_lap = driver_laps.pick_fastest()
-                    driver_pos = fastest_lap.get_pos_data()
-                    positions = driver_pos.loc[:, ('X', 'Y')].to_numpy()
-                    rotated = self.rotate(positions, angle=track_angle)
+        self.track_line = []
+        self.max_session_time = 0
+        
+        self.menu_title = arcade.Text("Simple F1", 700, 750, arcade.color.GOLD, 32, anchor_x="center")
+        self.loading_text = arcade.Text("LOADING ASSETS...\n(Grand Prix mode may take 1-2 minutes)", 700, 450, arcade.color.WHITE, 20, anchor_x="center", multiline=True, width=800, align="center")
+
+    def hex_to_color(self, hex_str):
+        if not hex_str or hex_str == "": return arcade.color.WHITE
+        try:
+            h = hex_str.lstrip('#')
+            return tuple(int(h[i:i+2], 16) for i in (0, 2, 4))
+        except:
+            return arcade.color.WHITE
+
+    def load_data_logic(self):
+        try:
+            clean_count = "".join(filter(str.isdigit, self.input_drivers))
+            count = int(clean_count) if clean_count else 5
+            
+            session_type = 'R' if self.input_mode == "Grand Prix" else 'Q'
+            session = fastf1.get_session(int(self.input_year), self.input_event, session_type)
+            session.load(telemetry=True)
+            
+            track_angle = session.get_circuit_info().rotation / 180 * np.pi
+            
+            results = session.results.iloc[:count]
+            drivers_to_load = results['Abbreviation'].tolist()
+            
+            # --- Load Track Layout ---
+            ref_lap = session.laps.pick_fastest()
+            if ref_lap is None or pd.isna(ref_lap['LapTime']):
+                for drv in drivers_to_load:
+                    temp_laps = session.laps.pick_drivers(drv)
+                    if not temp_laps.empty:
+                        ref_lap = temp_laps.pick_fastest()
+                        if ref_lap is not None: break
+            
+            pos_data = ref_lap.get_pos_data().fill_missing()
+            track_raw = pos_data.loc[:, ('X', 'Y')].to_numpy()
+            rotated_track = self.rotate(track_raw, track_angle)
+            
+            self.final_scale = min((1100 * 0.8) / (rotated_track[:, 0].max() - rotated_track[:, 0].min()), 
+                                   (900 * 0.8) / (rotated_track[:, 1].max() - rotated_track[:, 1].min()))
+            self.offset_x = 850 - ((rotated_track[:, 0].min() + rotated_track[:, 0].max()) / 2) * self.final_scale
+            self.offset_y = 450 - ((rotated_track[:, 1].min() + rotated_track[:, 1].max()) / 2) * self.final_scale
+            
+            self.track_line = [self.world_to_screen(p[0], p[1]) for p in rotated_track]
+            
+            if len(self.track_line) > 0:
+                self.track_line.append(self.track_line[0])
+
+            # --- Load Driver Telemetry ---
+            global_min_time = float('inf')
+            
+            for drv in drivers_to_load:
+                try:
+                    laps = session.laps.pick_drivers(drv)
+                    if laps.empty: continue
                     
-                    driver_name = session.get_driver(driver)['Abbreviation']
+                    if self.input_mode == "One Lap":
+                        target_laps = laps.pick_fastest()
+                        if target_laps is None: continue
+                        telemetry = target_laps.get_pos_data().fill_missing()
+                    else:
+                        telemetry = laps.get_pos_data().fill_missing()
                     
-                    # Interpolate for smooth animation
-                    smoothed = self.interpolate_smooth(rotated, factor=8)
+                    pos = self.rotate(telemetry.loc[:, ('X', 'Y')].to_numpy(), track_angle)
+                    times = telemetry['Time'].dt.total_seconds().to_numpy()
+                    
+                    if self.input_mode == "One Lap":
+                        times = times - times[0] 
+                    else:
+                        global_min_time = min(global_min_time, times[0])
+                        
+                    drv_color = self.hex_to_color(session.get_driver(drv)['TeamColor'])
                     
                     self.driver_data.append({
-                        'name': driver_name,
-                        'positions': smoothed,
-                        'color': self.get_driver_color(len(self.driver_data))
+                        'name': session.get_driver(drv)['Abbreviation'],
+                        'times': times,
+                        'positions': pos,
+                        'color': drv_color,
+                        'final_time': times[-1] - (times[0] if self.input_mode == "One Lap" else 0),
+                        'label_text': arcade.Text(session.get_driver(drv)['Abbreviation'], 0, 0, drv_color, 10, bold=True)
                     })
-                    print(f"Loaded {driver_name}")
-            except Exception as e:
-                print(f"Error loading driver: {e}")
-        
-        # Load track
-        track = session.laps.pick_fastest().get_pos_data().loc[:, ('X', 'Y')].to_numpy()
-        self.track = self.rotate(track, angle=track_angle)
-        
-        # Load corners
-        self.corners = []
-        offset_vector = np.array([500, 0])
-        for _, corner in self.circuit_info.corners.iterrows():
-            offset_angle = corner['Angle'] / 180 * np.pi
-            offset_x, offset_y = self.rotate(offset_vector, angle=offset_angle)
-            text_x = corner['X'] + offset_x
-            text_y = corner['Y'] + offset_y
-            text_x, text_y = self.rotate([text_x, text_y], angle=track_angle)
-            track_x, track_y = self.rotate([corner['X'], corner['Y']], angle=track_angle)
-            
-            self.corners.append({
-                'label': f"{corner['Number']}{corner['Letter']}",
-                'text_pos': (text_x, text_y),
-                'track_pos': (track_x, track_y)
-            })
-        
-        self.max_frames = max(len(d['positions']) for d in self.driver_data)
-        print(f"Max frames: {self.max_frames}")
-    
-    @staticmethod
-    def rotate(xy, *, angle):
-        """Rotate 2D points"""
-        rot_mat = np.array([[np.cos(angle), np.sin(angle)],
-                            [-np.sin(angle), np.cos(angle)]])
-        return np.matmul(xy, rot_mat)
-    
-    @staticmethod
-    def interpolate_smooth(positions, factor=8):
-        """Interpolate positions for smooth animation"""
-        x = positions[:, 0]
-        y = positions[:, 1]
-        t = np.linspace(0, len(positions) - 1, len(positions) * factor)
-        x_smooth = np.interp(t, np.arange(len(positions)), x)
-        y_smooth = np.interp(t, np.arange(len(positions)), y)
-        return np.column_stack([x_smooth, y_smooth])
-    
-    @staticmethod
-    def get_driver_color(index):
-        """Get color for driver"""
-        colors = [
-            (255, 0, 0),      # Red
-            (255, 165, 0),    # Orange
-            (0, 255, 0),      # Green
-            (0, 165, 255),    # Light Blue
-            (255, 0, 255),    # Magenta
-        ]
-        return colors[index % len(colors)]
-    
-    def world_to_screen(self, x, y):
-        """Convert world coordinates to screen coordinates"""
-        # Scale and center
-        scale = 2.5
-        offset_x = self.WIDTH // 2
-        offset_y = self.HEIGHT // 2
-        
-        screen_x = int(x * scale + offset_x)
-        screen_y = int(y * scale + offset_y)
-        
-        return screen_x, screen_y
-    
-    def draw_background(self):
-        """Draw background"""
-        self.display.fill((20, 20, 20))
-    
-    def draw_track(self):
-        """Draw the track"""
-        points = [self.world_to_screen(p[0], p[1]) for p in self.track]
-        if len(points) > 1:
-            pygame.draw.lines(self.display, (255, 255, 255), points, 3)
-    
-    def draw_corners(self):
-        """Draw corner labels"""
-        for corner in self.corners:
-            # Draw line
-            pygame.draw.line(self.display, (100, 100, 100), 
-                           self.world_to_screen(*corner['track_pos']),
-                           self.world_to_screen(*corner['text_pos']), 1)
-            
-            # Draw circle
-            pygame.draw.circle(self.display, (100, 100, 100),
-                             self.world_to_screen(*corner['text_pos']), 12)
-            
-            # Draw text
-            text = self.font_tiny.render(corner['label'], True, (255, 255, 255))
-            text_rect = text.get_rect(center=self.world_to_screen(*corner['text_pos']))
-            self.display.blit(text, text_rect)
-    
-    def draw_cars(self):
-        """Draw car positions"""
-        if self.current_frame >= self.max_frames:
-            self.current_frame = 0
-        
-        for driver in self.driver_data:
-            if self.current_frame < len(driver['positions']):
-                pos = driver['positions'][self.current_frame]
-                screen_x, screen_y = self.world_to_screen(pos[0], pos[1])
-                
-                # Draw car circle
-                pygame.draw.circle(self.display, driver['color'], (screen_x, screen_y), 8)
-                
-                # Draw driver name
-                name_text = self.font_tiny.render(driver['name'], True, driver['color'])
-                self.display.blit(name_text, (screen_x + 12, screen_y - 10))
-    
-    def draw_ui(self):
-        """Draw UI elements"""
-        # Background
-        pygame.draw.rect(self.display, (40, 40, 40), (10, 10, 600, 100))
-        pygame.draw.rect(self.display, (80, 80, 80), (10, 10, 600, 100), 2)
-        
-        # Buttons
-        button_color = (100, 150, 255)
-        hover_color = (150, 200, 255)
-        
-        mouse_pos = pygame.mouse.get_pos()
-        
-        # Play button
-        color = hover_color if self.buttons['play'].collidepoint(mouse_pos) else button_color
-        pygame.draw.rect(self.display, color, self.buttons['play'])
-        text = self.font_small.render("PLAY", True, (0, 0, 0))
-        self.display.blit(text, (self.buttons['play'].centerx - 25, self.buttons['play'].centery - 12))
-        
-        # Pause button
-        color = hover_color if self.buttons['pause'].collidepoint(mouse_pos) else button_color
-        pygame.draw.rect(self.display, color, self.buttons['pause'])
-        text = self.font_small.render("PAUSE", True, (0, 0, 0))
-        self.display.blit(text, (self.buttons['pause'].centerx - 30, self.buttons['pause'].centery - 12))
-        
-        # Reset button
-        color = hover_color if self.buttons['reset'].collidepoint(mouse_pos) else button_color
-        pygame.draw.rect(self.display, color, self.buttons['reset'])
-        text = self.font_small.render("RESET", True, (0, 0, 0))
-        self.display.blit(text, (self.buttons['reset'].centerx - 30, self.buttons['reset'].centery - 12))
-        
-        # Speed up button
-        color = hover_color if self.buttons['speed_up'].collidepoint(mouse_pos) else button_color
-        pygame.draw.rect(self.display, color, self.buttons['speed_up'])
-        text = self.font_small.render("SPEED+", True, (0, 0, 0))
-        self.display.blit(text, (self.buttons['speed_up'].centerx - 35, self.buttons['speed_up'].centery - 12))
-        
-        # Speed down button
-        color = hover_color if self.buttons['speed_down'].collidepoint(mouse_pos) else button_color
-        pygame.draw.rect(self.display, color, self.buttons['speed_down'])
-        text = self.font_small.render("SPEED-", True, (0, 0, 0))
-        self.display.blit(text, (self.buttons['speed_down'].centerx - 35, self.buttons['speed_down'].centery - 12))
-        
-        # Status text
-        status = "PLAYING" if self.playing else "PAUSED"
-        status_text = self.font_small.render(f"Status: {status} | Speed: {self.speed_multiplier:.1f}x | Frame: {self.current_frame}/{self.max_frames}", 
-                                            True, (200, 200, 200))
-        self.display.blit(status_text, (50, 750))
-        
-        # Title
-        title = self.font_large.render("F1 Silverstone 2023 - Qualifying", True, (255, 200, 0))
-        self.display.blit(title, (self.WIDTH - 450, 50))
-    
-    def handle_events(self):
-        """Handle user input"""
-        mouse_pos = pygame.mouse.get_pos()
-        
-        for event in pygame.event.get():
-            if event.type == QUIT:
-                self.running = False
-            
-            if event.type == MOUSEBUTTONDOWN:
-                if self.buttons['play'].collidepoint(mouse_pos):
-                    self.playing = True
-                elif self.buttons['pause'].collidepoint(mouse_pos):
-                    self.playing = False
-                elif self.buttons['reset'].collidepoint(mouse_pos):
-                    self.current_frame = 0
-                    self.playing = False
-                elif self.buttons['speed_up'].collidepoint(mouse_pos):
-                    self.speed_multiplier = min(3.0, self.speed_multiplier + 0.5)
-                elif self.buttons['speed_down'].collidepoint(mouse_pos):
-                    self.speed_multiplier = max(0.5, self.speed_multiplier - 0.5)
-            
-            if event.type == KEYDOWN:
-                if event.key == K_SPACE:
-                    self.playing = not self.playing
-                if event.key == K_r:
-                    self.current_frame = 0
-    
-    def update(self):
-        """Update game state"""
-        if self.playing:
-            self.current_frame += int(self.speed_multiplier)
-            if self.current_frame >= self.max_frames:
-                self.current_frame = 0
-    
-    def draw(self):
-        """Draw everything"""
-        self.draw_background()
-        self.draw_track()
-        self.draw_corners()
-        self.draw_cars()
-        self.draw_ui()
-        pygame.display.flip()
-    
-    def run(self):
-        """Main game loop"""
-        while self.running:
-            self.handle_events()
-            self.update()
-            self.draw()
-            self.clock.tick(60)  # 60 FPS
-        
-        pygame.quit()
-        sys.exit()
+                except Exception as e:
+                    print(f"Skipping {drv}: {e}")
 
+            if self.input_mode == "Grand Prix" and global_min_time != float('inf'):
+                for driver in self.driver_data:
+                    driver['times'] = driver['times'] - global_min_time
+                    self.max_session_time = max(self.max_session_time, driver['times'][-1])
+            else:
+                for driver in self.driver_data:
+                    self.max_session_time = max(self.max_session_time, driver['times'][-1])
+
+            self.state = STATE_RACING
+            self.speed_multiplier = 10.0 if self.input_mode == "Grand Prix" else 1.0 
+            
+        except Exception as e:
+            print(f"Load Error: {e}")
+            self.state = STATE_MENU
+
+    def world_to_screen(self, x, y):
+        return (x * self.final_scale + self.offset_x), (y * self.final_scale + self.offset_y)
+
+    def rotate(self, xy, angle):
+        rot_mat = np.array([[np.cos(angle), np.sin(angle)], [-np.sin(angle), np.cos(angle)]])
+        return np.matmul(xy, rot_mat)
+
+    def on_draw(self):
+        self.clear()
+        if self.state == STATE_MENU:
+            self.menu_title.draw()
+            fields = [f"Year: {self.input_year}", 
+                      f"Track: {self.input_event}", 
+                      f"Drivers: {self.input_drivers}",
+                      f"Mode: < {self.input_mode} >"]
+            
+            for i, text in enumerate(fields):
+                color = arcade.color.CYAN if i == self.active_field else arcade.color.WHITE
+                arcade.draw_text(text, 700, 600 - (i*50), color, 18, anchor_x="center")
+            
+            arcade.draw_text("Use UP/DOWN to change fields. Left/Right to change mode. ENTER to start.", 700, 300, arcade.color.GRAY, 12, anchor_x="center")
+                
+        elif self.state == STATE_LOADING:
+            self.loading_text.draw()
+            
+        elif self.state == STATE_RACING:
+            arcade.draw_line_strip(self.track_line, arcade.color.DARK_SLATE_GRAY, 2)
+            
+            # Leaderboard Sidebar
+            arcade.draw_lrbt_rectangle_filled(0, 280, 0, 900, (20, 20, 20, 220))
+            leader_time = self.driver_data[0]['final_time'] if self.driver_data else 0
+            
+            for i, driver in enumerate(self.driver_data):
+                y_tower = 830 - (i * 38)
+                
+                # Check if the driver is actively outputting telemetry at this exact second
+                is_active = driver['times'][0] <= self.elapsed_time <= driver['times'][-1]
+                
+                # UI dims for inactive drivers
+                text_color = arcade.color.WHITE if is_active else arcade.color.GRAY
+                strip_color = driver['color'] if is_active else (60, 60, 60)
+                
+                arcade.draw_rect_filled(
+                    arcade.LRBT(left=43, right=47, bottom=y_tower - 5, top=y_tower + 20),
+                    strip_color
+                )
+                
+                arcade.draw_text(f"{i+1} {driver['name']}", 60, y_tower, text_color, 12, bold=True)
+                
+                # Leaderboard Gaps
+                if i == 0:
+                    gap_text = "Leader" if self.input_mode == "Grand Prix" else "Interval"
+                else:
+                    gap = driver['final_time'] - leader_time
+                    gap_text = f"+{gap:.3f}" if gap > 0 else "N/A"
+                    
+                arcade.draw_text(gap_text, 260, y_tower, arcade.color.GOLD if is_active else arcade.color.GRAY, 10, anchor_x="right")
+
+                # ONLY draw the car on the track if it has active telemetry
+                if is_active:
+                    curr_x = np.interp(self.elapsed_time, driver['times'], driver['positions'][:, 0])
+                    curr_y = np.interp(self.elapsed_time, driver['times'], driver['positions'][:, 1])
+                    sx, sy = self.world_to_screen(curr_x, curr_y)
+                    
+                    arcade.draw_circle_filled(sx, sy, 6, driver['color'])
+                    driver['label_text'].x, driver['label_text'].y = sx + 10, sy + 10
+                    driver['label_text'].draw()
+            
+            mode_label = "Q - Fastest Laps" if self.input_mode == "One Lap" else "R - Grand Prix"
+            arcade.draw_text(f"Mode: {mode_label} | Speed: {self.speed_multiplier}x | Time: {self.elapsed_time:.1f}s", 300, 20, arcade.color.WHITE, 12)
+
+    def on_update(self, delta_time):
+        if self.state == STATE_RACING:
+            self.elapsed_time += delta_time * self.speed_multiplier
+            if self.elapsed_time > self.max_session_time + 1:
+                self.elapsed_time = 0
+
+    def on_key_press(self, key, modifiers):
+        if self.state == STATE_MENU:
+            if key == arcade.key.DOWN or key == arcade.key.TAB:
+                self.active_field = (self.active_field + 1) % 4
+            elif key == arcade.key.UP:
+                self.active_field = (self.active_field - 1) % 4
+            elif key == arcade.key.LEFT or key == arcade.key.RIGHT:
+                if self.active_field == 3:
+                    self.input_mode = "Grand Prix" if self.input_mode == "One Lap" else "One Lap"
+            elif key == arcade.key.ENTER:
+                self.state = STATE_LOADING
+                self.on_draw() 
+                arcade.schedule_once(lambda dt: self.load_data_logic(), 0.1)
+            elif key == arcade.key.BACKSPACE:
+                if self.active_field == 0: self.input_year = self.input_year[:-1]
+                elif self.active_field == 1: self.input_event = self.input_event[:-1]
+                elif self.active_field == 2: self.input_drivers = self.input_drivers[:-1]
+            else:
+                try:
+                    char = chr(key)
+                    if char.isalnum() or char == " ":
+                        if self.active_field == 0: self.input_year += char
+                        elif self.active_field == 1: self.input_event += char
+                        elif self.active_field == 2: self.input_drivers += char
+                except: pass
+        elif self.state == STATE_RACING:
+            if key == arcade.key.UP: self.speed_multiplier += (0.5 if self.input_mode == "One Lap" else 5.0)
+            elif key == arcade.key.DOWN: self.speed_multiplier = max(0.1, self.speed_multiplier - (0.5 if self.input_mode == "One Lap" else 5.0))
+            elif key == arcade.key.SPACE: self.speed_multiplier = 0 if self.speed_multiplier > 0 else 1.0
 
 if __name__ == "__main__":
-    game = F1Game()
-    game.run()
+    RealisticF1Sim()
+    arcade.run()
