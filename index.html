@@ -1,0 +1,599 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>F1 Tracker</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@300;400;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  :root {
+    --bg:       #0a0a0c;
+    --surface:  #111116;
+    --surface2: #1a1a22;
+    --border:   rgba(255,255,255,0.08);
+    --gold:     #e8c84a;
+    --gold-dim: rgba(232,200,74,0.15);
+    --cyan:     #3bd9c8;
+    --red:      #e83b4a;
+    --text:     #e4e4f0;
+    --muted:    rgba(228,228,240,0.45);
+    --font-ui:  'Barlow Condensed', sans-serif;
+    --font-mono:'JetBrains Mono', monospace;
+  }
+  html, body { height: 100%; background: var(--bg); color: var(--text); font-family: var(--font-ui); overflow: hidden; }
+  #app { display: grid; grid-template-rows: 52px 1fr; height: 100vh; }
+  header {
+    display: flex; align-items: center; gap: 20px; padding: 0 20px;
+    border-bottom: 1px solid var(--border); background: var(--surface); z-index: 10;
+  }
+  .logo { font-size: 20px; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase; color: var(--gold); }
+  .logo span { color: var(--text); }
+  .main { display: grid; grid-template-columns: 280px 1fr; height: 100%; overflow: hidden; }
+  aside {
+    background: var(--surface); border-right: 1px solid var(--border);
+    display: flex; flex-direction: column; overflow-y: auto; padding: 16px;
+  }
+  .panel-title { font-size: 11px; font-weight: 600; letter-spacing: 0.14em; text-transform: uppercase; color: var(--muted); margin-bottom: 10px; }
+  .section { margin-bottom: 20px; }
+  label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 4px; letter-spacing: 0.06em; }
+  input[type=text], input[type=number], select {
+    width: 100%; padding: 8px 10px; background: var(--surface2); border: 1px solid var(--border);
+    border-radius: 4px; color: var(--text); font-family: var(--font-ui); font-size: 14px; outline: none; transition: border-color .15s;
+  }
+  input[type=text]:focus, input[type=number]:focus, select:focus { border-color: var(--gold); }
+  select option { background: var(--surface2); }
+  .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .btn-load {
+    width: 100%; padding: 10px; background: var(--gold); border: none; border-radius: 4px;
+    font-family: var(--font-ui); font-size: 15px; font-weight: 700; letter-spacing: 0.1em;
+    text-transform: uppercase; color: #000; cursor: pointer; transition: opacity .15s, transform .1s;
+  }
+  .btn-load:hover { opacity: .88; }
+  .btn-load:active { transform: scale(.98); }
+  .btn-load:disabled { opacity: .35; cursor: not-allowed; }
+
+  /* Leaderboard */
+  #leaderboard { flex: 1; overflow-y: auto; }
+  .drv-row {
+    display: flex; align-items: center; gap: 8px; padding: 6px 4px;
+    border-bottom: 1px solid var(--border); font-size: 14px;
+    cursor: pointer; border-radius: 3px; transition: background .12s;
+  }
+  .drv-row:hover { background: var(--surface2); }
+  .drv-row.focused { background: var(--gold-dim); border-color: rgba(232,200,74,0.3); }
+  .drv-pos { width: 22px; text-align: right; color: var(--muted); font-size: 12px; }
+  .drv-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+  .drv-name { flex: 1; font-weight: 600; letter-spacing: 0.05em; }
+  .drv-dist { font-family: var(--font-mono); font-size: 11px; color: var(--muted); }
+  .focus-icon { font-size: 12px; color: var(--gold); opacity: 0; transition: opacity .1s; margin-left: 2px; }
+  .drv-row:hover .focus-icon, .drv-row.focused .focus-icon { opacity: 1; }
+
+  /* Focus badge */
+  #focus-badge {
+    display: none; align-items: center; gap: 6px; padding: 4px 10px;
+    background: var(--gold-dim); border: 1px solid rgba(232,200,74,0.4);
+    border-radius: 4px; font-size: 13px; font-weight: 600; color: var(--gold); letter-spacing: 0.06em;
+  }
+  #focus-badge.visible { display: flex; }
+  #focus-badge button {
+    background: none; border: none; color: var(--gold); cursor: pointer;
+    font-size: 14px; padding: 0; line-height: 1; opacity: .6;
+  }
+  #focus-badge button:hover { opacity: 1; }
+
+  /* Canvas */
+  .track-wrap { position: relative; background: var(--bg); display: flex; flex-direction: column; }
+  .track-toolbar {
+    display: flex; align-items: center; gap: 12px; padding: 8px 16px;
+    border-bottom: 1px solid var(--border); background: var(--surface); flex-shrink: 0;
+  }
+  .track-info { flex: 1; font-size: 13px; color: var(--muted); }
+  .track-info strong { color: var(--gold); font-size: 16px; margin-right: 8px; }
+  .time-display { font-family: var(--font-mono); font-size: 13px; color: var(--cyan); }
+  .btn-ctrl {
+    padding: 6px 14px; background: var(--surface2); border: 1px solid var(--border);
+    border-radius: 4px; color: var(--text); font-family: var(--font-ui); font-size: 13px;
+    font-weight: 600; letter-spacing: 0.06em; cursor: pointer; transition: background .12s, border-color .12s;
+  }
+  .btn-ctrl:hover { background: var(--gold-dim); border-color: var(--gold); }
+  .btn-ctrl.active { background: var(--gold-dim); border-color: var(--gold); color: var(--gold); }
+  canvas { flex: 1; display: block; width: 100%; height: 100%; }
+  .progress-wrap {
+    padding: 6px 16px; background: var(--surface); border-top: 1px solid var(--border);
+    display: flex; align-items: center; gap: 10px; flex-shrink: 0;
+  }
+  #progress {
+    flex: 1; -webkit-appearance: none; appearance: none;
+    height: 4px; border-radius: 2px; background: var(--surface2); cursor: pointer; outline: none;
+  }
+  #progress::-webkit-slider-thumb {
+    -webkit-appearance: none; width: 14px; height: 14px; border-radius: 50%; background: var(--gold); cursor: pointer;
+  }
+  .prog-label { font-family: var(--font-mono); font-size: 11px; color: var(--muted); min-width: 80px; text-align: right; }
+  #overlay {
+    position: absolute; inset: 0; display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    background: rgba(10,10,12,0.85); pointer-events: none; z-index: 5; transition: opacity .3s;
+  }
+  #overlay.hidden { opacity: 0; pointer-events: none; }
+  .overlay-msg { font-size: 22px; font-weight: 700; color: var(--gold); letter-spacing: 0.1em; }
+  .overlay-sub { font-size: 14px; color: var(--muted); margin-top: 8px; }
+  .spinner {
+    width: 36px; height: 36px; border: 3px solid var(--border);
+    border-top-color: var(--gold); border-radius: 50%;
+    animation: spin .7s linear infinite; margin-bottom: 16px;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  ::-webkit-scrollbar { width: 4px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+</style>
+</head>
+<body>
+<div id="app">
+  <header>
+    <div class="logo">F1<span> Tracker</span></div>
+    <div id="focus-badge">
+      <span>FOLLOWING</span>
+      <span id="focus-badge-name" style="font-size:15px"></span>
+      <button id="focus-clear" title="Clear focus">✕</button>
+    </div>
+    <div id="header-status" style="font-size:13px; color:var(--muted)">Configure a session and press Load.</div>
+  </header>
+
+  <div class="main">
+    <aside>
+      <div class="section">
+        <div class="panel-title">Session</div>
+        <label for="inp-year">Year</label>
+        <input id="inp-year" type="number" value="2023" min="2018" max="2030" style="margin-bottom:8px">
+        <label for="inp-event">Event / Circuit</label>
+        <input id="inp-event" type="text" value="Silverstone" placeholder="e.g. Silverstone" style="margin-bottom:8px">
+        <div class="row2">
+          <div>
+            <label for="inp-mode">Mode</label>
+            <select id="inp-mode">
+              <option value="q">Qualifying</option>
+              <option value="gp">Race (GP)</option>
+            </select>
+          </div>
+          <div>
+            <label for="inp-count">Drivers</label>
+            <input id="inp-count" type="number" value="5" min="1" max="22">
+          </div>
+        </div>
+      </div>
+      <div class="section">
+        <button id="btn-load" class="btn-load">Load Session</button>
+      </div>
+      <div class="section" style="flex:1">
+        <div class="panel-title">Leaderboard <span style="font-weight:400;opacity:.5;text-transform:none;letter-spacing:0">· click to follow</span></div>
+        <div id="leaderboard"><div style="font-size:13px;color:var(--muted)">No session loaded.</div></div>
+      </div>
+    </aside>
+
+    <div class="track-wrap" id="track-wrap">
+      <div class="track-toolbar">
+        <div class="track-info"><strong id="ev-name">—</strong><span id="ev-meta"></span></div>
+        <div class="time-display" id="time-display">0:00.000</div>
+        <select id="speed-select" class="btn-ctrl" style="width:auto;padding:5px 8px;font-size:13px">
+          <option value="1">1×</option>
+          <option value="5">5×</option>
+          <option value="10" selected>10×</option>
+          <option value="30">30×</option>
+          <option value="60">60×</option>
+        </select>
+        <button id="btn-play" class="btn-ctrl active">▶ Play</button>
+        <button id="btn-reset" class="btn-ctrl">↺ Reset</button>
+      </div>
+
+      <canvas id="track-canvas"></canvas>
+
+      <div class="progress-wrap">
+        <input type="range" id="progress" min="0" max="1000" value="0">
+        <div class="prog-label" id="prog-label">0:00 / 0:00</div>
+      </div>
+
+      <div id="overlay">
+        <div class="overlay-msg">F1 TRACKER</div>
+        <div class="overlay-sub">Load a session to begin</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+const API = "http://localhost:5000/api";
+
+// ── State ──────────────────────────────────────────────────────────────────
+let session       = null;
+let elapsed       = 0;
+let playing       = false;
+let lastTs        = null;
+let rafId         = null;
+
+// Camera
+let focusedDriver = null;
+let camX          = 450;
+let camY          = 300;
+let camZoom       = 1;
+let targetCamX    = 450;
+let targetCamY    = 300;
+let targetZoom    = 1;
+const FOCUS_ZOOM  = 5.5;
+const CAM_LERP    = 0.1;
+
+// ── DOM ────────────────────────────────────────────────────────────────────
+const canvas         = document.getElementById("track-canvas");
+const ctx            = canvas.getContext("2d");
+const overlay        = document.getElementById("overlay");
+const btnLoad        = document.getElementById("btn-load");
+const btnPlay        = document.getElementById("btn-play");
+const btnReset       = document.getElementById("btn-reset");
+const speedSelect    = document.getElementById("speed-select");
+const progress       = document.getElementById("progress");
+const progLabel      = document.getElementById("prog-label");
+const timeDisplay    = document.getElementById("time-display");
+const leaderboard    = document.getElementById("leaderboard");
+const evName         = document.getElementById("ev-name");
+const evMeta         = document.getElementById("ev-meta");
+const headerStatus   = document.getElementById("header-status");
+const focusBadge     = document.getElementById("focus-badge");
+const focusBadgeName = document.getElementById("focus-badge-name");
+
+// ── F1 car sprite builder ──────────────────────────────────────────────────
+const carCache = {};
+function buildCarImage(color, size) {
+  const key = color + size;
+  if (carCache[key]) return carCache[key];
+  const oc = document.createElement("canvas");
+  oc.width = size; oc.height = size;
+  const c  = oc.getContext("2d");
+  const s  = size / 32;
+  c.save();
+  c.translate(size / 2, size / 2);
+
+  // Body
+  c.beginPath();
+  c.moveTo(0, -14*s);
+  c.bezierCurveTo( 2*s,-12*s,  4*s, -8*s,  4*s, -2*s);
+  c.lineTo( 4*s, 6*s);
+  c.bezierCurveTo( 4*s, 10*s,  2*s, 12*s,  0, 13*s);
+  c.bezierCurveTo(-2*s, 12*s, -4*s, 10*s, -4*s,  6*s);
+  c.lineTo(-4*s, -2*s);
+  c.bezierCurveTo(-4*s, -8*s, -2*s,-12*s,  0,-14*s);
+  c.closePath();
+  c.fillStyle = color; c.fill();
+
+  // Cockpit
+  c.beginPath();
+  c.ellipse(0, -1*s, 2.2*s, 4*s, 0, 0, Math.PI*2);
+  c.fillStyle = "rgba(0,0,0,0.75)"; c.fill();
+
+  // Front wing
+  c.beginPath();
+  c.moveTo(-7*s,-10*s); c.lineTo(7*s,-10*s);
+  c.lineTo(5*s,-13*s);  c.lineTo(-5*s,-13*s);
+  c.closePath();
+  c.fillStyle = color; c.fill();
+
+  // Rear wing
+  c.beginPath();
+  c.moveTo(-6*s,11*s); c.lineTo(6*s,11*s);
+  c.lineTo(5*s,13*s);  c.lineTo(-5*s,13*s);
+  c.closePath();
+  c.fillStyle = color; c.fill();
+
+  // Tyres
+  c.fillStyle = "#222";
+  [[-5.5,-6],[-5.5,6],[5.5,-6],[5.5,6]].forEach(([tx,ty]) => {
+    c.beginPath(); c.ellipse(tx*s, ty*s, 2*s, 3*s, 0, 0, Math.PI*2); c.fill();
+  });
+
+  // White tyre highlights
+  c.fillStyle = "rgba(255,255,255,0.15)";
+  [[-5.5,-6],[-5.5,6],[5.5,-6],[5.5,6]].forEach(([tx,ty]) => {
+    c.beginPath(); c.ellipse(tx*s-0.5*s, ty*s-0.5*s, 0.8*s, 1.2*s, -0.4, 0, Math.PI*2); c.fill();
+  });
+
+  c.restore();
+  carCache[key] = oc;
+  return oc;
+}
+
+// ── Canvas resize ──────────────────────────────────────────────────────────
+function resizeCanvas() {
+  const wrap  = document.getElementById("track-wrap");
+  const toolH = wrap.querySelector(".track-toolbar").offsetHeight || 44;
+  const progH = wrap.querySelector(".progress-wrap").offsetHeight || 32;
+  const w = wrap.clientWidth  || (window.innerWidth  - 280);
+  const h = (wrap.clientHeight - toolH - progH) || (window.innerHeight - 128);
+  if (w > 0 && h > 0) { canvas.width = w; canvas.height = h; }
+  if (!focusedDriver) {
+    camX = targetCamX = session ? session.canvasW / 2 : 450;
+    camY = targetCamY = session ? session.canvasH / 2 : 300;
+    camZoom = targetZoom = 1;
+  }
+  drawFrame();
+}
+window.addEventListener("resize", resizeCanvas);
+
+// ── Helpers ────────────────────────────────────────────────────────────────
+function fmtTime(s) {
+  const m = Math.floor(s / 60);
+  return `${m}:${(s % 60).toFixed(3).padStart(6,"0")}`;
+}
+
+function bsearch(times, t) {
+  let lo = 0, hi = times.length - 1;
+  while (lo < hi - 1) { const mid = (lo+hi)>>1; if (times[mid] <= t) lo=mid; else hi=mid; }
+  return [lo, hi];
+}
+
+function getPos(drv, t) {
+  const { times, positions: pos } = drv;
+  if (!times || !pos || !times.length) return null;
+  if (t <= times[0]) return pos[0];
+  if (t >= times[times.length-1]) return pos[pos.length-1];
+  const [lo,hi] = bsearch(times,t);
+  const f = (t-times[lo])/(times[hi]-times[lo]);
+  return [pos[lo][0]+(pos[hi][0]-pos[lo][0])*f, pos[lo][1]+(pos[hi][1]-pos[lo][1])*f];
+}
+
+function getHeading(drv, t) {
+  const { times, positions: pos } = drv;
+  if (!times || !pos || times.length < 2) return 0;
+  const [lo,hi] = bsearch(times,t);
+  return Math.atan2(pos[hi][1]-pos[lo][1], pos[hi][0]-pos[lo][0]) + Math.PI/2;
+}
+
+function getDist(drv, t) {
+  const { times, distances: dists } = drv;
+  if (!times || !dists) return 0;
+  if (t <= times[0]) return dists[0];
+  if (t >= times[times.length-1]) return dists[dists.length-1];
+  const [lo,hi] = bsearch(times,t);
+  const f = (t-times[lo])/(times[hi]-times[lo]);
+  return dists[lo]+(dists[hi]-dists[lo])*f;
+}
+
+// ── World → screen (camera-aware) ─────────────────────────────────────────
+function w2s(wx, wy) {
+  const bsx = canvas.width  / (session ? session.canvasW : 900);
+  const bsy = canvas.height / (session ? session.canvasH : 600);
+  return [
+    (wx - camX) * camZoom * bsx + canvas.width  / 2,
+    (wy - camY) * camZoom * bsy + canvas.height / 2
+  ];
+}
+
+// ── Draw ───────────────────────────────────────────────────────────────────
+function drawFrame() {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  if (!session) return;
+
+  // Smooth camera lerp
+  camX    += (targetCamX - camX)    * CAM_LERP;
+  camY    += (targetCamY - camY)    * CAM_LERP;
+  camZoom += (targetZoom - camZoom) * CAM_LERP;
+
+  // Track outline
+  ctx.beginPath();
+  session.track.forEach((p, i) => {
+    const [sx,sy] = w2s(p[0], p[1]);
+    i === 0 ? ctx.moveTo(sx,sy) : ctx.lineTo(sx,sy);
+  });
+  ctx.closePath();
+  ctx.strokeStyle = focusedDriver ? "rgba(255,255,255,0.28)" : "rgba(255,255,255,0.18)";
+  ctx.lineWidth   = Math.max(2, 3 * (focusedDriver ? Math.min(camZoom, 2) : 1));
+  ctx.stroke();
+
+  // Sort drivers by distance
+  const sorted = session.drivers
+    .map(d => ({ d, dist: getDist(d, elapsed) }))
+    .sort((a,b) => b.dist - a.dist);
+
+  // 1 — Draw non-focused drivers as dots
+  for (const { d } of sorted) {
+    if (d.name === focusedDriver) continue;
+    const p = getPos(d, elapsed);
+    if (!p) continue;
+    const [sx,sy] = w2s(p[0], p[1]);
+
+    // Glow
+    ctx.beginPath();
+    ctx.arc(sx, sy, 9, 0, Math.PI*2);
+    ctx.fillStyle = d.color + "2a";
+    ctx.fill();
+    // Dot
+    ctx.beginPath();
+    ctx.arc(sx, sy, 5, 0, Math.PI*2);
+    ctx.fillStyle = d.color;
+    ctx.fill();
+    // Label (only when not too zoomed)
+    if (camZoom < 4) {
+      ctx.fillStyle = "rgba(255,255,255,0.75)";
+      ctx.font = `bold ${Math.max(9, Math.round(10/camZoom))}px 'Barlow Condensed'`;
+      ctx.textAlign = "left"; ctx.textBaseline = "middle";
+      ctx.fillText(d.name, sx + 8, sy - 1);
+    }
+  }
+
+  // 2 — Draw focused driver as F1 car
+  if (focusedDriver) {
+    const fd = session.drivers.find(d => d.name === focusedDriver);
+    if (fd) {
+      const p = getPos(fd, elapsed);
+      if (p) {
+        // Keep camera locked on this driver
+        targetCamX = p[0];
+        targetCamY = p[1];
+        targetZoom = FOCUS_ZOOM;
+
+        const [sx,sy]  = w2s(p[0], p[1]);
+        const heading  = getHeading(fd, elapsed);
+        const carSize  = 52;
+        const carImg   = buildCarImage(fd.color, carSize);
+
+        ctx.save();
+        ctx.translate(sx, sy);
+        ctx.rotate(heading);
+        ctx.shadowColor = fd.color;
+        ctx.shadowBlur  = 20;
+        ctx.drawImage(carImg, -carSize/2, -carSize/2, carSize, carSize);
+        ctx.shadowBlur = 0;
+        ctx.restore();
+
+        // Driver name tag
+        ctx.save();
+        const tagW = 52, tagH = 18, tagX = sx - tagW/2, tagY = sy - carSize/2 - 24;
+        ctx.fillStyle = fd.color;
+        ctx.beginPath();
+        ctx.roundRect(tagX, tagY, tagW, tagH, 3);
+        ctx.fill();
+        ctx.fillStyle = "#000";
+        ctx.font = "bold 11px 'Barlow Condensed'";
+        ctx.textAlign = "center"; ctx.textBaseline = "middle";
+        ctx.fillText(fd.name, sx, tagY + tagH/2);
+        ctx.restore();
+      }
+    }
+  }
+
+  updateLeaderboard(sorted);
+}
+
+// ── Leaderboard ────────────────────────────────────────────────────────────
+function updateLeaderboard(sorted) {
+  leaderboard.innerHTML = "";
+  sorted.forEach(({ d, dist }, i) => {
+    const row = document.createElement("div");
+    row.className = "drv-row" + (d.name === focusedDriver ? " focused" : "");
+    row.innerHTML = `
+      <span class="drv-pos">${i+1}</span>
+      <span class="drv-dot" style="background:${d.color}"></span>
+      <span class="drv-name">${d.name}</span>
+      <span class="drv-dist">${(dist/1000).toFixed(2)}km</span>
+      <span class="focus-icon">${d.name === focusedDriver ? "◉" : "◎"}</span>
+    `;
+    row.addEventListener("click", () => toggleFocus(d.name));
+    leaderboard.appendChild(row);
+  });
+}
+
+// ── Focus ──────────────────────────────────────────────────────────────────
+function toggleFocus(name) {
+  if (focusedDriver === name) { clearFocus(); return; }
+  focusedDriver = name;
+  focusBadgeName.textContent = name;
+  focusBadge.classList.add("visible");
+  headerStatus.style.display = "none";
+}
+
+function clearFocus() {
+  focusedDriver = null;
+  focusBadge.classList.remove("visible");
+  headerStatus.style.display = "";
+  targetCamX = session ? session.canvasW/2 : 450;
+  targetCamY = session ? session.canvasH/2 : 300;
+  targetZoom = 1;
+}
+
+document.getElementById("focus-clear").addEventListener("click", clearFocus);
+
+// ── Animation loop ─────────────────────────────────────────────────────────
+function tick(ts) {
+  if (!playing) { lastTs = null; return; }
+  if (lastTs !== null) {
+    elapsed += (ts - lastTs) / 1000 * parseFloat(speedSelect.value);
+    if (elapsed > session.maxTime) elapsed = 0;
+  }
+  lastTs = ts;
+  timeDisplay.textContent = fmtTime(elapsed);
+  progress.value = Math.round((elapsed / session.maxTime) * 1000);
+  progLabel.textContent = `${fmtTime(elapsed)} / ${fmtTime(session.maxTime)}`;
+  drawFrame();
+  rafId = requestAnimationFrame(tick);
+}
+
+function startPlay() {
+  if (!session) return;
+  playing = true;
+  btnPlay.textContent = "⏸ Pause";
+  btnPlay.classList.add("active");
+  rafId = requestAnimationFrame(tick);
+}
+
+function pausePlay() {
+  playing = false; lastTs = null;
+  if (rafId) cancelAnimationFrame(rafId);
+  btnPlay.textContent = "▶ Play";
+  btnPlay.classList.remove("active");
+}
+
+// ── Load ───────────────────────────────────────────────────────────────────
+async function loadSession() {
+  const year  = document.getElementById("inp-year").value;
+  const event = document.getElementById("inp-event").value;
+  const mode  = document.getElementById("inp-mode").value;
+  const count = document.getElementById("inp-count").value;
+
+  pausePlay(); clearFocus();
+  overlay.classList.remove("hidden");
+  overlay.innerHTML = `<div class="spinner"></div><div class="overlay-msg">LOADING</div><div class="overlay-sub">${event} ${year}</div>`;
+  btnLoad.disabled = true;
+
+  try {
+    const res  = await fetch(`${API}/session?year=${year}&event=${encodeURIComponent(event)}&mode=${mode}&count=${count}`);
+    const data = await res.json();
+    if (!data.ok) throw new Error(data.error);
+
+    session = data;
+    const firstTimes = data.drivers.filter(d=>d.times&&d.times.length>0).map(d=>d.times[0]);
+    elapsed = firstTimes.length > 0 ? Math.min(...firstTimes) : 0;
+
+    camX = targetCamX = data.canvasW/2;
+    camY = targetCamY = data.canvasH/2;
+    camZoom = targetZoom = 1;
+
+    evName.textContent = data.event;
+    evMeta.textContent = ` ${data.year} · ${data.mode==="gp"?"Race":"Qualifying"} · ${data.drivers.length} drivers`;
+    headerStatus.textContent = `${data.event} ${data.year} — ${data.hasTelemetry?"live telemetry":"lap data only"}`;
+    overlay.classList.add("hidden");
+    setTimeout(() => { resizeCanvas(); startPlay(); }, 50);
+
+  } catch (err) {
+    overlay.innerHTML = `
+      <div class="overlay-msg" style="color:var(--red)">ERROR</div>
+      <div class="overlay-sub">${err.message}</div>
+      <div class="overlay-sub" style="margin-top:16px;font-size:12px">Make sure server.py is running on port 5000.</div>`;
+  } finally {
+    btnLoad.disabled = false;
+  }
+}
+
+// ── Listeners ──────────────────────────────────────────────────────────────
+btnLoad.addEventListener("click", loadSession);
+btnPlay.addEventListener("click", () => { if (playing) pausePlay(); else startPlay(); });
+btnReset.addEventListener("click", () => {
+  elapsed = 0; pausePlay();
+  if (session) { timeDisplay.textContent=fmtTime(0); progress.value=0; progLabel.textContent=`${fmtTime(0)} / ${fmtTime(session.maxTime)}`; drawFrame(); }
+});
+progress.addEventListener("mousedown", pausePlay);
+progress.addEventListener("input", () => {
+  if (!session) return;
+  elapsed = (progress.value/1000)*session.maxTime;
+  timeDisplay.textContent = fmtTime(elapsed);
+  progLabel.textContent = `${fmtTime(elapsed)} / ${fmtTime(session.maxTime)}`;
+  drawFrame();
+});
+["inp-year","inp-event","inp-mode","inp-count"].forEach(id => {
+  document.getElementById(id).addEventListener("keydown", e => { if (e.key==="Enter") loadSession(); });
+});
+
+resizeCanvas();
+</script>
+</body>
+</html>

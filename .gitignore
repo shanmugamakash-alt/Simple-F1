@@ -1,0 +1,19 @@
+# F1 data cache - these files are large and auto-generated, never commit them
+f1_cache/
+ff1_cache/
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.env
+venv/
+.venv/
+
+# OS
+.DS_Store
+Thumbs.db
